@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"gopkg.in/yaml.v3"
 )
 
 type ingress struct {
@@ -126,6 +128,20 @@ func main() {
 		if err != nil {
 			log.Printf("failed to checkout branch for %s: %v", repo, err)
 		}
+
+		kFile := filepath.Join(repo, "kubernetes-deploy.tpl")
+		bytes, err := os.ReadFile(kFile)
+		if err != nil {
+			log.Printf("failed to read file for %s: %v", repo, err)
+		}
+
+		ing := ingress{}
+		err = yaml.Unmarshal(bytes, &ing)
+		if err != nil {
+			log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+		}
+
+		fmt.Println(ing)
 	}
 
 	// parse kubernetes.tpl file and marshal into a struct
