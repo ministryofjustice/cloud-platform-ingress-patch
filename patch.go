@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -130,18 +133,32 @@ func main() {
 		}
 
 		kFile := filepath.Join(repo, "kubernetes-deploy.tpl")
-		bytes, err := os.ReadFile(kFile)
+		byte, err := os.ReadFile(kFile)
 		if err != nil {
 			log.Printf("failed to read file for %s: %v", repo, err)
 		}
 
 		ing := ingress{}
-		err = yaml.Unmarshal(bytes, &ing)
-		if err != nil {
-			log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-		}
 
-		fmt.Println(ing)
+		// Parsing the yaml.
+		decoder := yaml.NewDecoder(bytes.NewReader(byte))
+
+		// loop through multiple documents to omit empty documents
+		for {
+
+			if err := decoder.Decode(&ing); err != nil {
+				// Break when there are no more documents to decode
+				if err != io.EOF {
+					return
+				}
+				break
+			}
+			// Continue if our yaml document is not of type ingress
+			if reflect.ValueOf(ing).IsZero() {
+				continue
+			}
+		}
+		fmt.Println("ing.APIVersion : " + ing.APIVersion)
 	}
 
 	// parse kubernetes.tpl file and marshal into a struct
