@@ -16,7 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type ingress struct {
+type oldIngress struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
 	Metadata   struct {
@@ -39,6 +39,41 @@ type ingress struct {
 					Backend struct {
 						ServiceName string `yaml:"serviceName"`
 						ServicePort int    `yaml:"servicePort"`
+					} `yaml:"backend"`
+				} `yaml:"paths"`
+			} `yaml:"http"`
+		} `yaml:"rules"`
+	} `yaml:"spec"`
+}
+
+type newIngress struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name        string `yaml:"name"`
+		Annotations struct {
+			KubernetesIoIngressClass                  string `yaml:"kubernetes.io/ingress.class"`
+			ExternalDNSAlphaKubernetesIoSetIdentifier string `yaml:"external-dns.alpha.kubernetes.io/set-identifier"`
+			ExternalDNSAlphaKubernetesIoAwsWeight     string `yaml:"external-dns.alpha.kubernetes.io/aws-weight"`
+		} `yaml:"annotations"`
+	} `yaml:"metadata"`
+	Spec struct {
+		TLS []struct {
+			Hosts []string `yaml:"hosts"`
+		} `yaml:"tls"`
+		Rules []struct {
+			Host string `yaml:"host"`
+			HTTP struct {
+				Paths []struct {
+					Path     string `yaml:"path"`
+					PathType string `yaml:"pathType"`
+					Backend  struct {
+						Service struct {
+							Name string `yaml:"name"`
+							Port struct {
+								Number int `yaml:"number"`
+							} `yaml:"port"`
+						} `yaml:"service"`
 					} `yaml:"backend"`
 				} `yaml:"paths"`
 			} `yaml:"http"`
@@ -138,7 +173,7 @@ func main() {
 			log.Printf("failed to read file for %s: %v", repo, err)
 		}
 
-		ing := ingress{}
+		ing := oldIngress{}
 
 		// Parsing the yaml.
 		decoder := yaml.NewDecoder(bytes.NewReader(byte))
@@ -159,11 +194,28 @@ func main() {
 			}
 		}
 		fmt.Println("ing.APIVersion : " + ing.APIVersion)
+
+		// change api version and add http path value:
+
+		// Idea here was to create a new ingress struct, map values from old ingress struct, replacing where necessary
+		// Poornima just hinted that deepcopy could solve this
+
+		newIng := newIngress{
+			APIVersion: newApi, // using string const for new API value
+			Kind:       ing.Kind,
+			Metadata:   ing.Metadata,
+
+			// Need to solve mapping the rest of the fields - i was failing to find the right syntax, or maybe
+			// the struct itself requires a more accessible implementation??
+
+		}
+
+		fmt.Println(ing)
+		fmt.Println(newIng)
+
 	}
 
-	// parse kubernetes.tpl file and marshal into a struct
-
-	// change api version and add http path value
+	// marshal newly created ingress struct into file
 
 	// perform pull request against repo
 
