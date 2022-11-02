@@ -107,10 +107,15 @@ type ingress struct {
 			Host string `yaml:"host"`
 			HTTP struct {
 				Paths []struct {
-					Path    string `yaml:"path"`
-					Backend struct {
-						ServiceName string `yaml:"serviceName"`
-						ServicePort int    `yaml:"servicePort"`
+					Path     string `yaml:"path"`
+					PathType string `yaml:"pathType"`
+					Backend  struct {
+						Service struct {
+							Name string `yaml:"name"`
+							Port struct {
+								Number int `yaml:"number"`
+							} `yaml:"port"`
+						} `yaml:"service"`
 					} `yaml:"backend"`
 				} `yaml:"paths"`
 			} `yaml:"http"`
@@ -118,11 +123,27 @@ type ingress struct {
 	} `yaml:"spec"`
 }
 
+/*
+   - path: /
+     backend:
+       serviceName: helloworld
+       servicePort: 4567
+
+
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: helloworld
+            port:
+              number: 4567
+*/
+
 func main() {
 	const (
-		base   = "https://github.com/ministryofjustice/"
-		newApi = "networking.k8s.io/v1"
-		oldApi = "networking.k8s.io/v1beta1"
+		base    = "https://github.com/ministryofjustice/"
+		newApi  = "networking.k8s.io/v1"
+		oldApi  = "networking.k8s.io/v1beta1"
+		message = "Update ingress apiVersion to networking.k8s.io/v1 and format yaml"
 	)
 
 	var (
@@ -134,29 +155,29 @@ func main() {
 
 	// define a slice of repositories to patch
 	repos := []string{
-		"apply-for-compensation-prototype",
-		"apply-for-legal-aid-prototype",
-		"book-a-prison-visit-prototype",
+		// "apply-for-compensation-prototype",
+		// "apply-for-legal-aid-prototype",
+		// "book-a-prison-visit-prototype",
 		"cloud-platform-prototype-demo",
-		"dex-ia-proto",
-		"eligibility-estimate",
-		"hmpps-assess-risks-and-needs-prototypes",
-		"hmpps-incentives-tool",
-		"hmpps-interventions-prototype",
-		"hmpps-licenses-prototype",
-		"hmpps-manage-supervisions-prototype",
-		"hmpps-prepare-a-case-prototype",
-		"hmpps-prisoner-education",
-		"interventions-design-history",
-		"jason-design-demo",
-		"laa-crime-apply-prototype",
-		"laa-view-court-data-prototype",
-		"makerecall-prototype",
-		"manage-supervisions-design-history",
-		"opg-lpa-fd-prototype",
-		"opg-sirius-prototypes",
-		"request-info-from-moj",
-		"send-legal-mail-prototype",
+		// "dex-ia-proto",
+		// "eligibility-estimate",
+		// "hmpps-assess-risks-and-needs-prototypes",
+		// "hmpps-incentives-tool",
+		// "hmpps-interventions-prototype",
+		// "hmpps-licenses-prototype",
+		// "hmpps-manage-supervisions-prototype",
+		// "hmpps-prepare-a-case-prototype",
+		// "hmpps-prisoner-education",
+		// "interventions-design-history",
+		// "jason-design-demo",
+		// "laa-crime-apply-prototype",
+		// "laa-view-court-data-prototype",
+		// "makerecall-prototype",
+		// "manage-supervisions-design-history",
+		// "opg-lpa-fd-prototype",
+		// "opg-sirius-prototypes",
+		// "request-info-from-moj",
+		// "send-legal-mail-prototype",
 	}
 
 	m := manifest{}
@@ -227,33 +248,122 @@ func main() {
 			if err != nil {
 				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
 			}
-			fmt.Printf("Kind is %s\n", t.Kind)
 			// case switch to create a deployment, service and ingress
-			if t.Kind == "Deployment" {
-				fmt.Println("found deployment")
-				err = yaml.Unmarshal(byteSlice, &m.Dep)
+			switch t.Kind {
+			case "Ingress":
+				err := yaml.Unmarshal(byteSlice, &m.Ing)
+				if err != nil {
+					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+				}
+			case "Deployment":
+				err := yaml.Unmarshal(byteSlice, &m.Dep)
+				if err != nil {
+					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+				}
+			case "Service":
+				err := yaml.Unmarshal(byteSlice, &m.Svc)
 				if err != nil {
 					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
 				}
 			}
 
-			if t.Kind == "Service" {
-				fmt.Println("found service", t.Kind)
-				err = yaml.Unmarshal(byteSlice, &m.Svc)
-				if err != nil {
-					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-				}
-			}
+		}
 
-			if t.Kind == "Ingress" {
-				fmt.Println("found ingress")
-				err = yaml.Unmarshal(byteSlice, &m.Ing)
+		m.Ing.APIVersion = newApi
+		m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = m.Svc.Metadata.Name
+		m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = m.Svc.Spec.Ports[0].Port
+
+		err = os.Remove(kFile)
+		if err != nil {
+			log.Printf("failed to remove file for %s: %v", repo, err)
+		}
+
+		// write the new ingress to the file
+		f, err := os.Create(kFile)
+		if err != nil {
+			log.Printf("failed to create file for %s: %v", repo, err)
+		}
+		defer f.Close()
+
+		// write the new ingress to the file
+		dep, err := yaml.Marshal(m.Dep)
+		if err != nil {
+			log.Printf("failed to marshal yaml for %s: %v", repo, err)
+		}
+		_, err = f.Write(dep)
+		if err != nil {
+			log.Printf("failed to write to file for %s: %v", repo, err)
+		}
+
+		// write a --- to the file
+		_, err = f.WriteString("\n---\n\n")
+		if err != nil {
+			log.Printf("failed to write to file for %s: %v", repo, err)
+		}
+
+		// write the new svc to the file
+		svc, err := yaml.Marshal(m.Svc)
+		if err != nil {
+			log.Printf("failed to marshal yaml for %s: %v", repo, err)
+		}
+
+		_, err = f.Write(svc)
+		if err != nil {
+			log.Printf("failed to write to file for %s: %v", repo, err)
+		}
+
+		// write a --- to the file
+		_, err = f.WriteString("\n---\n\n")
+		if err != nil {
+			log.Printf("failed to write to file for %s: %v", repo, err)
+		}
+
+		// write the new ingress to the file
+		ing, err := yaml.Marshal(m.Ing)
+		if err != nil {
+			log.Printf("failed to marshal yaml for %s: %v", repo, err)
+		}
+
+		_, err = f.Write(ing)
+		if err != nil {
+			log.Printf("failed to write to file for %s: %v", repo, err)
+		}
+
+		status, err := tree.Status()
+		if err != nil {
+			log.Printf("failed to get status for %s: %v", repo, err)
+		}
+
+		if status.IsClean() {
+			log.Printf("no changes for %s", repo)
+		}
+
+		for path := range status {
+			if status.IsUntracked(path) {
+				_, err := tree.Add(path)
 				if err != nil {
-					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+					log.Printf("failed to add file for %s: %v", repo, err)
 				}
 			}
 		}
-		fmt.Println("here's the manifest", m)
+
+		_, err = tree.Commit(message, &git.CommitOptions{
+			All: true,
+		})
+		if err != nil {
+			log.Printf("failed to commit for %s: %v", repo, err)
+		}
+
+		err = localRepo.Push(&git.PushOptions{
+			RemoteName: "origin",
+			Auth: &http.BasicAuth{
+				Username: *user,
+				Password: *pass,
+			},
+		})
+		if err != nil {
+			log.Printf("failed to push changes: %v", err)
+		}
 		break
 	}
 
@@ -266,7 +376,6 @@ func main() {
 }
 
 func SplitYAML(resources []byte) ([][]byte, error) {
-
 	dec := yaml.NewDecoder(bytes.NewReader(resources))
 
 	var res [][]byte
