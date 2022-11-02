@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/google/go-github/v48/github"
+	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,6 +184,14 @@ func main() {
 	}
 
 	m := manifest{}
+
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: *pass},
+	)
+	tc := oauth2.NewClient(ctx, ts)
+
+	client := github.NewClient(tc)
 
 	// loop through repositories and git clone
 	err := os.Mkdir("./tmp/", 0755)
@@ -364,6 +375,18 @@ func main() {
 		if err != nil {
 			log.Printf("failed to push changes: %v", err)
 		}
+
+		createPR := &github.NewPullRequest{
+			Title: github.String(message),
+			Head:  github.String(string(branchName)),
+			Base:  github.String("main"),
+		}
+
+		_, _, err = client.PullRequests.Create(context.Background(), "ministryofjustice", repo, createPR)
+		if err != nil {
+			log.Println(err)
+		}
+
 		break
 	}
 
