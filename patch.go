@@ -18,13 +18,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type manifest struct {
+type template struct {
 	Ing ingress
 	Dep deployment
 	Svc service
 }
 
-type template struct {
+type manifest struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
 }
@@ -126,27 +126,94 @@ type ingress struct {
 	} `yaml:"spec"`
 }
 
-/*
-   - path: /
-     backend:
-       serviceName: helloworld
-       servicePort: 4567
+func createGitHubClient(pass string) (*github.Client, error) {
+	if pass == "" {
+		return nil, fmt.Errorf("no github token provided")
+	}
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: pass},
+	)
+	tc := oauth2.NewClient(ctx, ts)
 
+	client := github.NewClient(tc)
+	return client, nil
+}
 
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: helloworld
-            port:
-              number: 4567
-*/
+func prepareTempDir() error {
+	// loop through repositories and git clone
+	err := os.Mkdir("./tmp/", 0755)
+	if err != nil {
+		return err
+	}
+
+	err = os.Chdir("./tmp/")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type repository struct {
+	Name      string
+	LocalRepo *git.Repository
+	Reference *plumbing.Reference
+	Worktree  *git.Worktree
+}
+
+func cloneRepository(base, repo, user, pass string) (*repository, error) {
+	localRepo, err := git.PlainClone(repo, false, &git.CloneOptions{
+		URL: base + repo,
+		Auth: &http.BasicAuth{
+			Username: user,
+			Password: pass,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Get HEAD ref from repository
+	ref, err := localRepo.Head()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the worktree for the local repository
+	tree, err := localRepo.Worktree()
+	if err != nil {
+		return nil, err
+	}
+
+	return &repository{
+		Name:      repo,
+		LocalRepo: localRepo,
+		Reference: ref,
+		Worktree:  tree,
+	}, nil
+}
+
+func (r *repository) checkout(branch string) error {
+	err := r.Worktree.Checkout(&git.CheckoutOptions{
+		Hash:   r.Reference.Hash(),
+		Branch: plumbing.NewBranchReferenceName(branch),
+		Create: true,
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 
 func main() {
 	const (
-		base    = "https://github.com/ministryofjustice/"
-		newApi  = "networking.k8s.io/v1"
-		oldApi  = "networking.k8s.io/v1beta1"
-		message = "Update ingress apiVersion to networking.k8s.io/v1 and format yaml"
+		base       = "https://github.com/ministryofjustice/"
+		newApi     = "networking.k8s.io/v1"
+		oldApi     = "networking.k8s.io/v1beta1"
+		message    = "Update ingress apiVersion to networking.k8s.io/v1 and format yaml"
+		branchName = "ingress-patch"
 	)
 
 	var (
@@ -155,6 +222,12 @@ func main() {
 	)
 
 	flag.Parse()
+
+	// create the github client
+	client, err := createGitHubClient(*pass)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// define a slice of repositories to patch
 	repos := []string{
@@ -183,63 +256,23 @@ func main() {
 		// "send-legal-mail-prototype",
 	}
 
-	m := manifest{}
+	m := template{}
 
-	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: *pass},
-	)
-	tc := oauth2.NewClient(ctx, ts)
-
-	client := github.NewClient(tc)
-
-	// loop through repositories and git clone
-	err := os.Mkdir("./tmp/", 0755)
-	if err != nil {
-		log.Println(err)
-	}
-
-	err = os.Chdir("./tmp/")
-	if err != nil {
-		log.Println(err)
+	if err := prepareTempDir(); err != nil {
+		log.Fatal(err)
 	}
 
 	for _, repo := range repos {
 		fmt.Println("cloning " + repo)
-		localRepo, err := git.PlainClone(repo, false, &git.CloneOptions{
-			URL: base + repo,
-			Auth: &http.BasicAuth{
-				Username: *user,
-				Password: *pass,
-			},
-		})
+		repository, err := cloneRepository(base, repo, *user, *pass)
 		if err != nil {
 			log.Printf("failed to clone %s: %v", repo, err)
 			continue
 		}
 
-		// Get HEAD ref from repository
-		ref, err := localRepo.Head()
-		if err != nil {
-			log.Printf("failed to get HEAD ref for %s: %v", repo, err)
-		}
-
-		// Get the worktree for the local repository
-		tree, err := localRepo.Worktree()
-		if err != nil {
-			log.Printf("failed to get worktree for %s: %v", repo, err)
-		}
-		branchName := plumbing.NewBranchReferenceName("ingress-patch")
-
-		create := &git.CheckoutOptions{
-			Hash:   ref.Hash(),
-			Branch: branchName,
-			Create: true,
-		}
-
-		err = tree.Checkout(create)
-		if err != nil {
-			log.Printf("failed to checkout branch for %s: %v", repo, err)
+		if err = repository.checkout(branchName); err != nil {
+			log.Printf("failed to checkout %s: %v", repo, err)
+			continue
 		}
 
 		kFile := filepath.Join(repo, "kubernetes-deploy.tpl")
@@ -254,7 +287,7 @@ func main() {
 		}
 		for _, byteSlice := range allByteSlices {
 			// fmt.Printf("Here's a YAML:\n%v\n", string(byteSlice))
-			var t template
+			var t manifest
 			err := yaml.Unmarshal(byteSlice, &t)
 			if err != nil {
 				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
@@ -340,7 +373,7 @@ func main() {
 			log.Printf("failed to write to file for %s: %v", repo, err)
 		}
 
-		status, err := tree.Status()
+		status, err := repository.Worktree.Status()
 		if err != nil {
 			log.Printf("failed to get status for %s: %v", repo, err)
 		}
@@ -351,21 +384,21 @@ func main() {
 
 		for path := range status {
 			if status.IsUntracked(path) {
-				_, err := tree.Add(path)
+				_, err := repository.Worktree.Add(path)
 				if err != nil {
 					log.Printf("failed to add file for %s: %v", repo, err)
 				}
 			}
 		}
 
-		_, err = tree.Commit(message, &git.CommitOptions{
+		_, err = repository.Worktree.Commit(message, &git.CommitOptions{
 			All: true,
 		})
 		if err != nil {
 			log.Printf("failed to commit for %s: %v", repo, err)
 		}
 
-		err = localRepo.Push(&git.PushOptions{
+		err = repository.LocalRepo.Push(&git.PushOptions{
 			RemoteName: "origin",
 			Auth: &http.BasicAuth{
 				Username: *user,
