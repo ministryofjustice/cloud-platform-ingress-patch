@@ -18,6 +18,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type repository struct {
+	Name      string
+	LocalRepo *git.Repository
+	Reference *plumbing.Reference
+	Worktree  *git.Worktree
+}
+
 type template struct {
 	Ing ingress
 	Dep deployment
@@ -155,13 +162,6 @@ func prepareTempDir() error {
 	return nil
 }
 
-type repository struct {
-	Name      string
-	LocalRepo *git.Repository
-	Reference *plumbing.Reference
-	Worktree  *git.Worktree
-}
-
 func cloneRepository(base, repo, user, pass string) (*repository, error) {
 	localRepo, err := git.PlainClone(repo, false, &git.CloneOptions{
 		URL: base + repo,
@@ -207,6 +207,107 @@ func (r *repository) checkout(branch string) error {
 	return nil
 }
 
+func (r *repository) PatchIngress(repo, newApi, fileName string) error {
+	kFile := filepath.Join(repo, fileName)
+	b, err := os.ReadFile(kFile)
+	if err != nil {
+		return fmt.Errorf("failed to read file for %s: %v", repo, err)
+	}
+
+	allByteSlices, err := SplitYAML(b)
+	if err != nil {
+		log.Printf("failed to split yaml for %s: %v", repo, err)
+	}
+	for _, byteSlice := range allByteSlices {
+		// fmt.Printf("Here's a YAML:\n%v\n", string(byteSlice))
+		var t manifest
+		err := yaml.Unmarshal(byteSlice, &t)
+		if err != nil {
+			log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+		}
+		// case switch to create a deployment, service and ingress
+		switch t.Kind {
+		case "Ingress":
+			err := yaml.Unmarshal(byteSlice, &m.Ing)
+			if err != nil {
+				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+			}
+		case "Deployment":
+			err := yaml.Unmarshal(byteSlice, &m.Dep)
+			if err != nil {
+				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+			}
+		case "Service":
+			err := yaml.Unmarshal(byteSlice, &m.Svc)
+			if err != nil {
+				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
+			}
+		}
+
+	}
+
+	m.Ing.APIVersion = newApi
+	m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = m.Svc.Metadata.Name
+	m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = m.Svc.Spec.Ports[0].Port
+
+	err = os.Remove(kFile)
+	if err != nil {
+		log.Printf("failed to remove file for %s: %v", repo, err)
+	}
+
+	// write the new ingress to the file
+	f, err := os.Create(kFile)
+	if err != nil {
+		log.Printf("failed to create file for %s: %v", repo, err)
+	}
+	defer f.Close()
+
+	// write the new ingress to the file
+	dep, err := yaml.Marshal(m.Dep)
+	if err != nil {
+		log.Printf("failed to marshal yaml for %s: %v", repo, err)
+	}
+	_, err = f.Write(dep)
+	if err != nil {
+		log.Printf("failed to write to file for %s: %v", repo, err)
+	}
+
+	// write a --- to the file
+	_, err = f.WriteString("\n---\n\n")
+	if err != nil {
+		log.Printf("failed to write to file for %s: %v", repo, err)
+	}
+
+	// write the new svc to the file
+	svc, err := yaml.Marshal(m.Svc)
+	if err != nil {
+		log.Printf("failed to marshal yaml for %s: %v", repo, err)
+	}
+
+	_, err = f.Write(svc)
+	if err != nil {
+		log.Printf("failed to write to file for %s: %v", repo, err)
+	}
+
+	// write a --- to the file
+	_, err = f.WriteString("\n---\n\n")
+	if err != nil {
+		log.Printf("failed to write to file for %s: %v", repo, err)
+	}
+
+	// write the new ingress to the file
+	ing, err := yaml.Marshal(m.Ing)
+	if err != nil {
+		log.Printf("failed to marshal yaml for %s: %v", repo, err)
+	}
+
+	_, err = f.Write(ing)
+	if err != nil {
+		log.Printf("failed to write to file for %s: %v", repo, err)
+	}
+	return nil
+}
+
 func main() {
 	const (
 		base       = "https://github.com/ministryofjustice/"
@@ -214,6 +315,7 @@ func main() {
 		oldApi     = "networking.k8s.io/v1beta1"
 		message    = "Update ingress apiVersion to networking.k8s.io/v1 and format yaml"
 		branchName = "ingress-patch"
+		fileName   = "kubernetes-deploy.tpl"
 	)
 
 	var (
@@ -275,102 +377,9 @@ func main() {
 			continue
 		}
 
-		kFile := filepath.Join(repo, "kubernetes-deploy.tpl")
-		b, err := os.ReadFile(kFile)
-		if err != nil {
-			log.Printf("failed to read file for %s: %v", repo, err)
-		}
-
-		allByteSlices, err := SplitYAML(b)
-		if err != nil {
-			log.Printf("failed to split yaml for %s: %v", repo, err)
-		}
-		for _, byteSlice := range allByteSlices {
-			// fmt.Printf("Here's a YAML:\n%v\n", string(byteSlice))
-			var t manifest
-			err := yaml.Unmarshal(byteSlice, &t)
-			if err != nil {
-				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-			}
-			// case switch to create a deployment, service and ingress
-			switch t.Kind {
-			case "Ingress":
-				err := yaml.Unmarshal(byteSlice, &m.Ing)
-				if err != nil {
-					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-				}
-			case "Deployment":
-				err := yaml.Unmarshal(byteSlice, &m.Dep)
-				if err != nil {
-					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-				}
-			case "Service":
-				err := yaml.Unmarshal(byteSlice, &m.Svc)
-				if err != nil {
-					log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-				}
-			}
-
-		}
-
-		m.Ing.APIVersion = newApi
-		m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = m.Svc.Metadata.Name
-		m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = m.Svc.Spec.Ports[0].Port
-
-		err = os.Remove(kFile)
-		if err != nil {
-			log.Printf("failed to remove file for %s: %v", repo, err)
-		}
-
-		// write the new ingress to the file
-		f, err := os.Create(kFile)
-		if err != nil {
-			log.Printf("failed to create file for %s: %v", repo, err)
-		}
-		defer f.Close()
-
-		// write the new ingress to the file
-		dep, err := yaml.Marshal(m.Dep)
-		if err != nil {
-			log.Printf("failed to marshal yaml for %s: %v", repo, err)
-		}
-		_, err = f.Write(dep)
-		if err != nil {
-			log.Printf("failed to write to file for %s: %v", repo, err)
-		}
-
-		// write a --- to the file
-		_, err = f.WriteString("\n---\n\n")
-		if err != nil {
-			log.Printf("failed to write to file for %s: %v", repo, err)
-		}
-
-		// write the new svc to the file
-		svc, err := yaml.Marshal(m.Svc)
-		if err != nil {
-			log.Printf("failed to marshal yaml for %s: %v", repo, err)
-		}
-
-		_, err = f.Write(svc)
-		if err != nil {
-			log.Printf("failed to write to file for %s: %v", repo, err)
-		}
-
-		// write a --- to the file
-		_, err = f.WriteString("\n---\n\n")
-		if err != nil {
-			log.Printf("failed to write to file for %s: %v", repo, err)
-		}
-
-		// write the new ingress to the file
-		ing, err := yaml.Marshal(m.Ing)
-		if err != nil {
-			log.Printf("failed to marshal yaml for %s: %v", repo, err)
-		}
-
-		_, err = f.Write(ing)
-		if err != nil {
-			log.Printf("failed to write to file for %s: %v", repo, err)
+		if err := repository.PatchIngress(newApi, fileName); err != nil {
+			log.Printf("failed to patch %s: %v", repo, err)
+			continue
 		}
 
 		status, err := repository.Worktree.Status()
