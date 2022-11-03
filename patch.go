@@ -23,6 +23,7 @@ type repository struct {
 	LocalRepo *git.Repository
 	Reference *plumbing.Reference
 	Worktree  *git.Worktree
+	Template  *template
 }
 
 type template struct {
@@ -133,181 +134,6 @@ type ingress struct {
 	} `yaml:"spec"`
 }
 
-func createGitHubClient(pass string) (*github.Client, error) {
-	if pass == "" {
-		return nil, fmt.Errorf("no github token provided")
-	}
-	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: pass},
-	)
-	tc := oauth2.NewClient(ctx, ts)
-
-	client := github.NewClient(tc)
-	return client, nil
-}
-
-func prepareTempDir() error {
-	// loop through repositories and git clone
-	err := os.Mkdir("./tmp/", 0755)
-	if err != nil {
-		return err
-	}
-
-	err = os.Chdir("./tmp/")
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func cloneRepository(base, repo, user, pass string) (*repository, error) {
-	localRepo, err := git.PlainClone(repo, false, &git.CloneOptions{
-		URL: base + repo,
-		Auth: &http.BasicAuth{
-			Username: user,
-			Password: pass,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Get HEAD ref from repository
-	ref, err := localRepo.Head()
-	if err != nil {
-		return nil, err
-	}
-
-	// Get the worktree for the local repository
-	tree, err := localRepo.Worktree()
-	if err != nil {
-		return nil, err
-	}
-
-	return &repository{
-		Name:      repo,
-		LocalRepo: localRepo,
-		Reference: ref,
-		Worktree:  tree,
-	}, nil
-}
-
-func (r *repository) checkout(branch string) error {
-	err := r.Worktree.Checkout(&git.CheckoutOptions{
-		Hash:   r.Reference.Hash(),
-		Branch: plumbing.NewBranchReferenceName(branch),
-		Create: true,
-	})
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *repository) PatchIngress(repo, newApi, fileName string) error {
-	kFile := filepath.Join(repo, fileName)
-	b, err := os.ReadFile(kFile)
-	if err != nil {
-		return fmt.Errorf("failed to read file for %s: %v", repo, err)
-	}
-
-	allByteSlices, err := SplitYAML(b)
-	if err != nil {
-		log.Printf("failed to split yaml for %s: %v", repo, err)
-	}
-	for _, byteSlice := range allByteSlices {
-		// fmt.Printf("Here's a YAML:\n%v\n", string(byteSlice))
-		var t manifest
-		err := yaml.Unmarshal(byteSlice, &t)
-		if err != nil {
-			log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-		}
-		// case switch to create a deployment, service and ingress
-		switch t.Kind {
-		case "Ingress":
-			err := yaml.Unmarshal(byteSlice, &m.Ing)
-			if err != nil {
-				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-			}
-		case "Deployment":
-			err := yaml.Unmarshal(byteSlice, &m.Dep)
-			if err != nil {
-				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-			}
-		case "Service":
-			err := yaml.Unmarshal(byteSlice, &m.Svc)
-			if err != nil {
-				log.Printf("failed to unmarshal yaml for %s: %v", repo, err)
-			}
-		}
-
-	}
-
-	m.Ing.APIVersion = newApi
-	m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = m.Svc.Metadata.Name
-	m.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = m.Svc.Spec.Ports[0].Port
-
-	err = os.Remove(kFile)
-	if err != nil {
-		log.Printf("failed to remove file for %s: %v", repo, err)
-	}
-
-	// write the new ingress to the file
-	f, err := os.Create(kFile)
-	if err != nil {
-		log.Printf("failed to create file for %s: %v", repo, err)
-	}
-	defer f.Close()
-
-	// write the new ingress to the file
-	dep, err := yaml.Marshal(m.Dep)
-	if err != nil {
-		log.Printf("failed to marshal yaml for %s: %v", repo, err)
-	}
-	_, err = f.Write(dep)
-	if err != nil {
-		log.Printf("failed to write to file for %s: %v", repo, err)
-	}
-
-	// write a --- to the file
-	_, err = f.WriteString("\n---\n\n")
-	if err != nil {
-		log.Printf("failed to write to file for %s: %v", repo, err)
-	}
-
-	// write the new svc to the file
-	svc, err := yaml.Marshal(m.Svc)
-	if err != nil {
-		log.Printf("failed to marshal yaml for %s: %v", repo, err)
-	}
-
-	_, err = f.Write(svc)
-	if err != nil {
-		log.Printf("failed to write to file for %s: %v", repo, err)
-	}
-
-	// write a --- to the file
-	_, err = f.WriteString("\n---\n\n")
-	if err != nil {
-		log.Printf("failed to write to file for %s: %v", repo, err)
-	}
-
-	// write the new ingress to the file
-	ing, err := yaml.Marshal(m.Ing)
-	if err != nil {
-		log.Printf("failed to marshal yaml for %s: %v", repo, err)
-	}
-
-	_, err = f.Write(ing)
-	if err != nil {
-		log.Printf("failed to write to file for %s: %v", repo, err)
-	}
-	return nil
-}
-
 func main() {
 	const (
 		base       = "https://github.com/ministryofjustice/"
@@ -358,94 +184,294 @@ func main() {
 		// "send-legal-mail-prototype",
 	}
 
-	m := template{}
-
-	if err := prepareTempDir(); err != nil {
+	if err := prepareTempDir("./tmp/"); err != nil {
 		log.Fatal(err)
 	}
 
 	for _, repo := range repos {
 		fmt.Println("cloning " + repo)
-		repository, err := cloneRepository(base, repo, *user, *pass)
+		repository, err := NewRepository(base, repo, *user, *pass)
 		if err != nil {
 			log.Printf("failed to clone %s: %v", repo, err)
 			continue
 		}
 
-		if err = repository.checkout(branchName); err != nil {
+		if err = repository.Checkout(branchName); err != nil {
 			log.Printf("failed to checkout %s: %v", repo, err)
 			continue
 		}
 
-		if err := repository.PatchIngress(newApi, fileName); err != nil {
+		kFile := filepath.Join(repo, fileName)
+		b, err := os.ReadFile(kFile)
+		if err != nil {
+			log.Printf("failed to read file for %s: %v", repo, err)
+		}
+		if err := repository.PatchIngress(newApi, b); err != nil {
 			log.Printf("failed to patch %s: %v", repo, err)
 			continue
 		}
 
-		status, err := repository.Worktree.Status()
+		file, err := createKubernetesDeploy(kFile)
 		if err != nil {
-			log.Printf("failed to get status for %s: %v", repo, err)
+			log.Printf("failed to create file for %s: %v", repo, err)
+			continue
+		}
+		defer file.Close()
+
+		if err := repository.writeYaml(file); err != nil {
+			log.Printf("failed to write yaml for %s: %v", repo, err)
+			continue
 		}
 
-		if status.IsClean() {
-			log.Printf("no changes for %s", repo)
-		}
-
-		for path := range status {
-			if status.IsUntracked(path) {
-				_, err := repository.Worktree.Add(path)
-				if err != nil {
-					log.Printf("failed to add file for %s: %v", repo, err)
-				}
-			}
-		}
-
-		_, err = repository.Worktree.Commit(message, &git.CommitOptions{
-			All: true,
-		})
-		if err != nil {
-			log.Printf("failed to commit for %s: %v", repo, err)
-		}
-
-		err = repository.LocalRepo.Push(&git.PushOptions{
-			RemoteName: "origin",
-			Auth: &http.BasicAuth{
-				Username: *user,
-				Password: *pass,
-			},
-		})
-		if err != nil {
-			log.Printf("failed to push changes: %v", err)
-		}
-
-		createPR := &github.NewPullRequest{
-			Title: github.String(message),
-			Head:  github.String(string(branchName)),
-			Base:  github.String("main"),
-		}
-
-		_, _, err = client.PullRequests.Create(context.Background(), "ministryofjustice", repo, createPR)
-		if err != nil {
-			log.Println(err)
+		if err := repository.createPullRequest(*user, *pass, message, branchName, client); err != nil {
+			log.Printf("failed to push %s: %v", repo, err)
+			continue
 		}
 
 		break
 	}
+}
 
-	// parse kubernetes.tpl file and marshal into a struct
+func createGitHubClient(pass string) (*github.Client, error) {
+	if pass == "" {
+		return nil, fmt.Errorf("no github token provided")
+	}
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: pass},
+	)
+	tc := oauth2.NewClient(ctx, ts)
 
-	// change api version and add http path value
+	client := github.NewClient(tc)
+	return client, nil
+}
 
-	// perform pull request against repo
+func prepareTempDir(path string) error {
+	// loop through repositories and git clone
+	err := os.Mkdir(path, 0755)
+	if err != nil {
+		return err
+	}
+
+	err = os.Chdir(path)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func NewRepository(base, repo, user, pass string) (*repository, error) {
+	localRepo, err := git.PlainClone(repo, false, &git.CloneOptions{
+		URL: base + repo,
+		Auth: &http.BasicAuth{
+			Username: user,
+			Password: pass,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Get HEAD ref from repository
+	ref, err := localRepo.Head()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the worktree for the local repository
+	tree, err := localRepo.Worktree()
+	if err != nil {
+		return nil, err
+	}
+
+	t := &template{}
+
+	return &repository{
+		Name:      repo,
+		LocalRepo: localRepo,
+		Reference: ref,
+		Worktree:  tree,
+		Template:  t,
+	}, nil
+}
+
+func (r *repository) Checkout(branch string) error {
+	err := r.Worktree.Checkout(&git.CheckoutOptions{
+		Hash:   r.Reference.Hash(),
+		Branch: plumbing.NewBranchReferenceName(branch),
+		Create: true,
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *repository) PatchIngress(newApi string, yamlFile []byte) error {
+	allByteSlices, err := splitYAML(yamlFile)
+	if err != nil {
+		return fmt.Errorf("failed to split yaml for %s: %v", r.Name, err)
+	}
+	for _, byteSlice := range allByteSlices {
+		var t manifest
+		err := yaml.Unmarshal(byteSlice, &t)
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal yaml for %s: %v", r.Name, err)
+		}
+		// case switch to create a deployment, service and ingress
+		switch t.Kind {
+		case "Ingress":
+			err := yaml.Unmarshal(byteSlice, &r.Template.Ing)
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal yaml for %s: %v", r.Name, err)
+			}
+		case "Deployment":
+			err := yaml.Unmarshal(byteSlice, &r.Template.Dep)
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal yaml for %s: %v", r.Name, err)
+			}
+		case "Service":
+			err := yaml.Unmarshal(byteSlice, &r.Template.Svc)
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal yaml for %s: %v", r.Name, err)
+			}
+		}
+
+	}
+
+	r.Template.Ing.APIVersion = newApi
+	r.Template.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = r.Template.Svc.Metadata.Name
+	r.Template.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = r.Template.Svc.Spec.Ports[0].Port
+
+	return nil
+}
+
+func createKubernetesDeploy(filePath string) (*os.File, error) {
+	err := os.Remove(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove file for %s: %v", filePath, err)
+	}
+
+	// write the new ingress to the file
+	f, err := os.Create(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file for %s: %v", filePath, err)
+	}
+
+	return f, nil
+}
+
+func (r *repository) writeYaml(f *os.File) error {
+	// write the new ingress to the file
+	templates := []any{
+		r.Template.Dep,
+		r.Template.Svc,
+		r.Template.Ing,
+	}
+
+	for _, template := range templates {
+		y, err := yaml.Marshal(template)
+		if err != nil {
+			return fmt.Errorf("failed to marshal yaml for %s: %v", r.Name, err)
+		}
+		// write any to a file
+		_, err = f.Write(y)
+		if err != nil {
+			return fmt.Errorf("failed to write to file for %s: %v", r.Name, err)
+		}
+		_, err = f.WriteString("\n---\n\n")
+		if err != nil {
+			return fmt.Errorf("failed to write to file for %s: %v", r.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func stageChanges(repo string, worktree *git.Worktree) error {
+	status, err := worktree.Status()
+	if err != nil {
+		return fmt.Errorf("failed to get status for %s: %v", repo, err)
+	}
+
+	if status.IsClean() {
+		log.Printf("no changes for %s", repo)
+	}
+
+	for path := range status {
+		if status.IsUntracked(path) {
+			_, err := worktree.Add(path)
+			if err != nil {
+				log.Printf("failed to add file for %s: %v", repo, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *repository) createPullRequest(user, password, message, branchName string, client *github.Client) error {
+	if err := stageChanges(r.Name, r.Worktree); err != nil {
+		return fmt.Errorf("failed to stage changes for %s: %v", r.Name, err)
+	}
+
+	if err := commitChanges(user, password, r.Name, r.LocalRepo, r.Worktree, message); err != nil {
+		return fmt.Errorf("failed to commit changes for %s: %v", r.Name, err)
+	}
+
+	if err := prChanges(r.Name, message, branchName, *client); err != nil {
+		return fmt.Errorf("failed to push changes for %s: %v", r.Name, err)
+	}
+
+	return nil
 
 }
 
-func SplitYAML(resources []byte) ([][]byte, error) {
+func prChanges(repo, message, branchName string, client github.Client) error {
+	createPR := &github.NewPullRequest{
+		Title: github.String(message),
+		Head:  github.String(string(branchName)),
+		Base:  github.String("main"),
+	}
+
+	_, _, err := client.PullRequests.Create(context.Background(), "ministryofjustice", repo, createPR)
+	if err != nil {
+		return fmt.Errorf("failed to create pull request for %s: %v", repo, err)
+	}
+
+	return nil
+}
+
+func commitChanges(user, password, repo string, localRepo *git.Repository, worktree *git.Worktree, message string) error {
+	_, err := worktree.Commit(message, &git.CommitOptions{
+		All: true,
+	})
+	if err != nil {
+		log.Printf("failed to commit for %s: %v", repo, err)
+	}
+
+	err = localRepo.Push(&git.PushOptions{
+		RemoteName: "origin",
+		Auth: &http.BasicAuth{
+			Username: user,
+			Password: password,
+		},
+	})
+	if err != nil {
+		log.Printf("failed to push changes: %v", err)
+	}
+
+	return nil
+}
+
+func splitYAML(resources []byte) ([][]byte, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(resources))
 
 	var res [][]byte
 	for {
-		var value interface{}
+		var value any
 		err := dec.Decode(&value)
 		if err == io.EOF {
 			break
