@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-github/v48/github"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 )
 
@@ -173,7 +174,7 @@ func main() {
 		// "hmpps-prepare-a-case-prototype",
 		// "hmpps-prisoner-education",
 		// "interventions-design-history",
-		// "jason-design-demo",
+		"jason-design-demo",
 		// "laa-crime-apply-prototype",
 		// "laa-view-court-data-prototype",
 		// "makerecall-prototype",
@@ -188,48 +189,118 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for _, repo := range repos {
-		fmt.Println("cloning " + repo)
-		repository, err := NewRepository(base, repo, *user, *pass)
-		if err != nil {
-			log.Printf("failed to clone %s: %v", repo, err)
-			continue
-		}
-
-		if err = repository.Checkout(branchName); err != nil {
-			log.Printf("failed to checkout %s: %v", repo, err)
-			continue
-		}
-
-		kFile := filepath.Join(repo, fileName)
-		b, err := os.ReadFile(kFile)
-		if err != nil {
-			log.Printf("failed to read file for %s: %v", repo, err)
-		}
-		if err := repository.PatchIngress(newApi, b); err != nil {
-			log.Printf("failed to patch %s: %v", repo, err)
-			continue
-		}
-
-		file, err := createKubernetesDeploy(kFile)
-		if err != nil {
-			log.Printf("failed to create file for %s: %v", repo, err)
-			continue
-		}
-		defer file.Close()
-
-		if err := repository.writeYaml(file); err != nil {
-			log.Printf("failed to write yaml for %s: %v", repo, err)
-			continue
-		}
-
-		if err := repository.createPullRequest(*user, *pass, message, branchName, client); err != nil {
-			log.Printf("failed to push %s: %v", repo, err)
-			continue
-		}
-
-		break
+	repositories, err := createRepositories(base, *user, *pass, repos)
+	if err != nil {
+		log.Printf("error creating repositories: %v", err)
 	}
+
+	g := new(errgroup.Group)
+	for _, repo := range repositories {
+		repo := repo
+		g.Go(func() error {
+			fmt.Println("cloning " + repo.Name)
+			if err = repo.Checkout(branchName); err != nil {
+				return fmt.Errorf("error checking out branch on repo %s: %v", repo.Name, err)
+			}
+
+			kFile := filepath.Join(repo.Name, fileName)
+			b, err := os.ReadFile(kFile)
+			if err != nil {
+				return fmt.Errorf("error reading file: %v", err)
+			}
+			if err := repo.PatchIngress(newApi, b); err != nil {
+				return fmt.Errorf("error patching ingress on repo %s: %v", repo.Name, err)
+			}
+
+			file, err := createKubernetesDeploy(kFile)
+			if err != nil {
+				return fmt.Errorf("error creating kubernetes deploy file on repo %s: %v", repo.Name, err)
+			}
+			defer file.Close()
+
+			if err := repo.writeYaml(file); err != nil {
+				return fmt.Errorf("error writing yaml: %v", err)
+			}
+
+			if err := repo.createPullRequest(*user, *pass, message, branchName, client); err != nil {
+				return fmt.Errorf("error creating pull request on repo %s: %v", repo.Name, err)
+			}
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil {
+		log.Println(err)
+	} else {
+		fmt.Println("finished")
+	}
+	err = cleanTempDir("./tmp/")
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func cleanTempDir(dir string) error {
+	err := os.Chdir(dir)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// 	for _, repo := range repos {
+// 		fmt.Println("cloning " + repo)
+// 		repository, err := NewRepository(base, repo, *user, *pass)
+// 		if err != nil {
+// 			log.Printf("failed to clone %s: %v", repo, err)
+// 			continue
+// 		}
+
+// 		if err = repository.Checkout(branchName); err != nil {
+// 			log.Printf("failed to checkout %s: %v", repo, err)
+// 			continue
+// 		}
+
+// 		kFile := filepath.Join(repo, fileName)
+// 		b, err := os.ReadFile(kFile)
+// 		if err != nil {
+// 			log.Printf("failed to read file for %s: %v", repo, err)
+// 		}
+// 		if err := repository.PatchIngress(newApi, b); err != nil {
+// 			log.Printf("failed to patch %s: %v", repo, err)
+// 			continue
+// 		}
+
+// 		file, err := createKubernetesDeploy(kFile)
+// 		if err != nil {
+// 			log.Printf("failed to create file for %s: %v", repo, err)
+// 			continue
+// 		}
+// 		defer file.Close()
+
+// 		if err := repository.writeYaml(file); err != nil {
+// 			log.Printf("failed to write yaml for %s: %v", repo, err)
+// 			continue
+// 		}
+
+// 		if err := repository.createPullRequest(*user, *pass, message, branchName, client); err != nil {
+// 			log.Printf("failed to push %s: %v", repo, err)
+// 			continue
+// 		}
+
+// 		break
+// 	}
+// }
+
+func createRepositories(base, user, pass string, repos []string) ([]repository, error) {
+	var repositories []repository
+	for _, repo := range repos {
+		repository, err := NewRepository(base, repo, user, pass)
+		if err != nil {
+			return nil, fmt.Errorf("failed to clone %s: %v", repo, err)
+		}
+		repositories = append(repositories, *repository)
+	}
+	return repositories, nil
 }
 
 func createGitHubClient(pass string) (*github.Client, error) {
@@ -460,7 +531,7 @@ func commitChanges(user, password, repo string, localRepo *git.Repository, workt
 		},
 	})
 	if err != nil {
-		log.Printf("failed to push changes: %v", err)
+		return fmt.Errorf("failed to push for %s: %v", repo, err)
 	}
 
 	return nil
