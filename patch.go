@@ -106,13 +106,13 @@ type ingress struct {
 	Metadata   struct {
 		Name        string `yaml:"name"`
 		Annotations struct {
-			KubernetesIoIngressClass                  string `yaml:"kubernetes.io/ingress.class"`
 			ExternalDNSAlphaKubernetesIoSetIdentifier string `yaml:"external-dns.alpha.kubernetes.io/set-identifier"`
 			ExternalDNSAlphaKubernetesIoAwsWeight     string `yaml:"external-dns.alpha.kubernetes.io/aws-weight"`
 		} `yaml:"annotations"`
 	} `yaml:"metadata"`
 	Spec struct {
-		TLS []struct {
+		IngressClassName string `yaml:"ingressClassName"`
+		TLS              []struct {
 			Hosts []string `yaml:"hosts"`
 		} `yaml:"tls"`
 		Rules []struct {
@@ -143,6 +143,7 @@ func main() {
 		message    = "Update ingress apiVersion to networking.k8s.io/v1 and format yaml"
 		branchName = "ingress-patch"
 		fileName   = "kubernetes-deploy.tpl"
+		tempDir    = "./tmp/"
 	)
 
 	var (
@@ -163,7 +164,6 @@ func main() {
 		// "apply-for-compensation-prototype",
 		// "apply-for-legal-aid-prototype",
 		// "book-a-prison-visit-prototype",
-		"cloud-platform-prototype-demo",
 		// "dex-ia-proto",
 		// "eligibility-estimate",
 		// "hmpps-assess-risks-and-needs-prototypes",
@@ -185,9 +185,15 @@ func main() {
 		// "send-legal-mail-prototype",
 	}
 
-	if err := prepareTempDir("./tmp/"); err != nil {
+	if err := prepareTempDir(tempDir); err != nil {
 		log.Fatal(err)
 	}
+	defer func() {
+		err = cleanTempDir(tempDir)
+		if err != nil {
+			log.Println(err)
+		}
+	}()
 
 	repositories, err := createRepositories(base, *user, *pass, repos)
 	if err != nil {
@@ -233,63 +239,15 @@ func main() {
 	} else {
 		fmt.Println("finished")
 	}
-	err = cleanTempDir("./tmp/")
-	if err != nil {
-		log.Println(err)
-	}
 }
 
 func cleanTempDir(dir string) error {
-	err := os.Chdir(dir)
+	err := os.Chdir("..")
 	if err != nil {
 		return err
 	}
 	return os.RemoveAll(dir)
 }
-
-// 	for _, repo := range repos {
-// 		fmt.Println("cloning " + repo)
-// 		repository, err := NewRepository(base, repo, *user, *pass)
-// 		if err != nil {
-// 			log.Printf("failed to clone %s: %v", repo, err)
-// 			continue
-// 		}
-
-// 		if err = repository.Checkout(branchName); err != nil {
-// 			log.Printf("failed to checkout %s: %v", repo, err)
-// 			continue
-// 		}
-
-// 		kFile := filepath.Join(repo, fileName)
-// 		b, err := os.ReadFile(kFile)
-// 		if err != nil {
-// 			log.Printf("failed to read file for %s: %v", repo, err)
-// 		}
-// 		if err := repository.PatchIngress(newApi, b); err != nil {
-// 			log.Printf("failed to patch %s: %v", repo, err)
-// 			continue
-// 		}
-
-// 		file, err := createKubernetesDeploy(kFile)
-// 		if err != nil {
-// 			log.Printf("failed to create file for %s: %v", repo, err)
-// 			continue
-// 		}
-// 		defer file.Close()
-
-// 		if err := repository.writeYaml(file); err != nil {
-// 			log.Printf("failed to write yaml for %s: %v", repo, err)
-// 			continue
-// 		}
-
-// 		if err := repository.createPullRequest(*user, *pass, message, branchName, client); err != nil {
-// 			log.Printf("failed to push %s: %v", repo, err)
-// 			continue
-// 		}
-
-// 		break
-// 	}
-// }
 
 func createRepositories(base, user, pass string, repos []string) ([]repository, error) {
 	var repositories []repository
@@ -341,7 +299,7 @@ func NewRepository(base, repo, user, pass string) (*repository, error) {
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cloning error %s: %v", repo, err)
 	}
 
 	// Get HEAD ref from repository
@@ -412,7 +370,14 @@ func (r *repository) PatchIngress(newApi string, yamlFile []byte) error {
 
 	}
 
+	// Move ingress to the new controller
+	r.Template.Ing.Spec.IngressClassName = "default"
+	// Change the ingress API to the new version
 	r.Template.Ing.APIVersion = newApi
+	// Add specfic pathtype
+	r.Template.Ing.Spec.Rules[0].HTTP.Paths[0].PathType = "ImplementationSpecific"
+
+	// Add new service data
 	r.Template.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name = r.Template.Svc.Metadata.Name
 	r.Template.Ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number = r.Template.Svc.Spec.Ports[0].Port
 
