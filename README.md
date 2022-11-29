@@ -1,28 +1,26 @@
-# Ministry of Justice Template Repository
+# Prototype Ingress Patcher
 
 [![repo standards badge](https://img.shields.io/badge/dynamic/json?color=blue&style=for-the-badge&logo=github&label=MoJ%20Compliant&query=%24.result&url=https%3A%2F%2Foperations-engineering-reports.cloud-platform.service.justice.gov.uk%2Fapi%2Fv1%2Fcompliant_public_repositories%2Ftemplate-repository)](https://operations-engineering-reports.cloud-platform.service.justice.gov.uk/public-github-repositories.html#template-repository "Link to report")
 
-Use this template to [create a repository] with the default initial files for a Ministry of Justice Github repository, including:
+This repository contains the Go code that performs the following:
 
-- The correct LICENSE
-- Github Action example
-- A .gitignore file
-- A CODEOWNERS file
-- A dependabot.yml file
-- The MoJ Compliant Badge (Public repositories only)
+- Accepts a list of ministryofjustice repositories.
+- For each repository, it checks if the repository has an `kubernetes-deploy` resource (as defined in the prototype creation).
+- If so, it will patch the `ingress` resource to add the appropriate annotations ready for the new ingress API.
+- If changes are made, it will create a pull request with the changes.
 
-Once you have created your repository, please:
+## Usage
 
-- Edit the copy of this README.md file to document your project.
-- Grant permission/s to the appropriate MoJ team/s with at least one team having Admin permissions.
-- Try not to add individual users to the repository, instead use a team.
-- To add an Outside Collaborator to the repository follow the guidelines on the [GitHub-collaborator repository](https://github.com/ministryofjustice/github-collaborators).
-- Ensure branch protection is set up on the main branch.
-- [Optional] Modify the CODEOWNERS file and state the team or users that can authorise PR's.
-- Modify the Dependabot file to suit the [dependency manager](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#package-ecosystem) you plan to use and for [automated pull requests for package updates](https://docs.github.com/en/code-security/supply-chain-security/keeping-your-dependencies-updated-automatically/enabling-and-disabling-dependabot-version-updates#enabling-dependabot-version-updates). Dependabot is enabled in the settings by default.
-- Modify the short description found on the right side of the README.md file.
-- Ensure as many of the [GitHub Standards](https://github.com/ministryofjustice/github-repository-standards) rules are maintained as possibly can.
-- Modify the MoJ Compliant Badge url using these [instructions](https://github.com/orgs/ministryofjustice/teams/operations-engineering/discussions). If the repository is internal or private then the badge can removed as it will not work.
-- For a private repo with no GitHub Advanced Security license remove the .github/workflows/dependency-review.yml file.
+The prototype ingress patcher is a Go application that can be run locally or in a container.
 
-[create a repository]: https://github.com/ministryofjustice/template-repository/generate
+### Running locally
+
+To run the application locally, you will need to have Go installed on your machine. You can find instructions on how to do this [here](https://golang.org/doc/install).
+
+Once Go is installed, you can run the application by running the following command:
+
+```bash
+go run patch.go -u <github-username> -p <github-person-access-token>
+```
+
+If you want to change the list of repositories that the application will run against, you can do so by editing the `repositories` variable in the `patch.go` file.
