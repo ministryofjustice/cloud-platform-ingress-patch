@@ -25,6 +25,7 @@ type repository struct {
 	Reference *plumbing.Reference
 	Worktree  *git.Worktree
 	Template  *template
+	Head      string
 }
 
 type template struct {
@@ -212,7 +213,7 @@ func main() {
 			kFile := filepath.Join(repo.Name, fileName)
 			b, err := os.ReadFile(kFile)
 			if err != nil {
-				return fmt.Errorf("error reading file: %v", err)
+				return fmt.Errorf("unable to find file %v: %e", kFile, err)
 			}
 			if err := repo.PatchIngress(newApi, b); err != nil {
 				return fmt.Errorf("error patching ingress on repo %s: %v", repo.Name, err)
@@ -231,6 +232,8 @@ func main() {
 			if err := repo.createPullRequest(*user, *pass, message, branchName, client); err != nil {
 				return fmt.Errorf("error creating pull request on repo %s: %v", repo.Name, err)
 			}
+			fmt.Printf("/n---/ncreated pull request on " + "https://github.com/ministryofjustice/" + repo.Name)
+			fmt.Println("url located at: https://" + repo.Name + "cloud-platform.service.justice.gov.uk")
 			return err
 		})
 	}
@@ -322,6 +325,7 @@ func NewRepository(base, repo, user, pass string) (*repository, error) {
 		Reference: ref,
 		Worktree:  tree,
 		Template:  t,
+		Head:      ref.Name().Short(),
 	}, nil
 }
 
@@ -368,6 +372,10 @@ func (r *repository) PatchIngress(newApi string, yamlFile []byte) error {
 			}
 		}
 
+	}
+
+	if r.Template.Ing.APIVersion == newApi {
+		return fmt.Errorf("api version already set to %s", newApi)
 	}
 
 	// Move ingress to the new controller
@@ -457,7 +465,7 @@ func (r *repository) createPullRequest(user, password, message, branchName strin
 		return fmt.Errorf("failed to commit changes for %s: %v", r.Name, err)
 	}
 
-	if err := prChanges(r.Name, message, branchName, *client); err != nil {
+	if err := prChanges(r.Head, r.Name, message, branchName, *client); err != nil {
 		return fmt.Errorf("failed to push changes for %s: %v", r.Name, err)
 	}
 
@@ -465,11 +473,11 @@ func (r *repository) createPullRequest(user, password, message, branchName strin
 
 }
 
-func prChanges(repo, message, branchName string, client github.Client) error {
+func prChanges(head, repo, message, branchName string, client github.Client) error {
 	createPR := &github.NewPullRequest{
 		Title: github.String(message),
 		Head:  github.String(string(branchName)),
-		Base:  github.String("main"),
+		Base:  github.String(head),
 	}
 
 	_, _, err := client.PullRequests.Create(context.Background(), "ministryofjustice", repo, createPR)
